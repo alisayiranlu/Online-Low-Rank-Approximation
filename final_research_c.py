@@ -23,11 +23,11 @@ def angular_distance(p, q):
     return np.arccos(dot_product)
 
 # ---------------------------
-# Node (region) class with coreset (reservoir sampling)
+# Node (region) class
 # ---------------------------
 class Node:
     _id_iter = itertools.count()
-    def __init__(self, k, parent=None, depth=0, coreset_capacity=50):
+    def __init__(self, k, parent=None, depth=0):
         self.id = next(Node._id_iter)
         self.is_leaf = True
         self.V = None               # k x d splitting frame (columns are normals)
@@ -35,17 +35,15 @@ class Node:
         self.children = dict()      # mask -> Node
 
         # leaf stats
-        self.n = 0                  # total points seen in this region (not coreset size)
-        # note: we no longer maintain s as sum of all points (to avoid storing full data)
+        self.n = 0
+        self.s = np.zeros(k)        # sum of unit vectors
         self.Rlen = 0.0
         self.r_bar = 0.0
-        self.c = None               # centroid (unit vector) computed from coreset
+        self.c = None               # centroid (unit vector)
         self.min_dot_est = 1.0
         self.residuals = deque(maxlen=50)
         self.expert_basis = None    # list of orthonormal basis vectors (columns) for low-rank approx
-        # coreset: small sampled representative set (reservoir)
-        self.coreset = []           # list of unit vectors
-        self.coreset_capacity = coreset_capacity
+        self.buffer = deque(maxlen=200)  # small sample buffer to initialize children / expert
         self.parent = parent
         self.depth = depth
         self.angular_diameter = 0.0
@@ -53,51 +51,6 @@ class Node:
 
     def __repr__(self):
         return f"Node(id={self.id},leaf={self.is_leaf},n={self.n},depth={self.depth})"
-
-    def add_point_to_coreset(self, u):
-        """
-        Reservoir sampling: maintain at most coreset_capacity items uniformly sampled
-        from all points seen in this node. self.n should be incremented before calling.
-        """
-        # reservoir sampling: with probability cap/n replace random index
-        cap = self.coreset_capacity
-        if cap <= 0:
-            return
-        if len(self.coreset) < cap:
-            self.coreset.append(u.copy())
-        else:
-            # generate integer in [1, self.n]
-            j = random.randint(1, max(1, self.n))
-            if j <= cap:
-                idx = random.randint(0, cap - 1)
-                self.coreset[idx] = u.copy()
-
-    def recompute_centroid_from_coreset(self):
-        """
-        Compute centroid c from the current coreset (mean of coreset vectors), then normalize.
-        If coreset empty, leave c unchanged (or set to default).
-        """
-        if len(self.coreset) == 0:
-            # fallback: if node has parent centroid, use that; otherwise unit e1
-            if self.parent is not None and self.parent.c is not None:
-                self.c = self.parent.c.copy()
-            else:
-                vec = np.zeros(self.k)
-                vec[0] = 1.0
-                self.c = vec
-            return self.c
-        # use simple average of coreset (unweighted). Reservoir samples approximate the mean.
-        M = np.stack(self.coreset, axis=0)  # m x k
-        mean = np.mean(M, axis=0)
-        if np.linalg.norm(mean) < 1e-12:
-            # degenerate, pick first coreset vector
-            self.c = normalize(self.coreset[0])
-        else:
-            self.c = normalize(mean)
-        # update Rlen and r_bar as approximate proxies
-        self.Rlen = np.linalg.norm(mean) * len(self.coreset)
-        self.r_bar = (np.linalg.norm(mean) / max(1, len(self.coreset))) if len(self.coreset) > 0 else 0.0
-        return self.c
 
 # ---------------------------
 # HRD functions
@@ -126,10 +79,6 @@ def get_child_index(u, V, b=None):
 
 def gram_schmidt(V):
     """Orthonormalize columns of V using Gram-Schmidt, return matrix with orthonormal columns."""
-    if V is None:
-        return np.zeros((0,0))
-    if V.size == 0:
-        return np.zeros((V.shape[0], 0))
     U = []
     for v in V.T:
         w = v.copy()
@@ -250,15 +199,44 @@ def build_expert_from_region_centroids(all_centroids, target_idx, r):
     basis = build_basis_from_centroids(selected)
     # if Gram-Schmidt returned fewer than r due to linear dependence, return what we have
     return basis
+class GlobalCoreset:
+    def __init__(self, k, eps_c=0.1, lam=0.1, max_size=500):
+        self.k = k
+        self.eps_c = eps_c
+        self.lam = lam
+        self.max_size = max_size
+        self.Q = []      # weighted coreset points
+        self.weights = [] 
 
+    def update(self, x_t):
+        """
+        Incremental Chen-style coreset refinement.
+        This is a simplified placeholder: we do reservoir-style sampling per ring.
+        """
+        # In practice: compute bicriteria solution S0_t
+        # then assign x_t to nearest center, identify its ring, sample.
+        # For demo: we just maintain a bounded reservoir with weights.
+        if len(self.Q) < self.max_size:
+            self.Q.append(x_t)
+            self.weights.append(1.0)
+        else:
+            # with some probability, replace an element
+            j = np.random.randint(len(self.Q))
+            self.Q[j] = x_t
+            # weight could be scaled depending on sampling rule
+            self.weights[j] = 1.0
+
+    def get_points(self):
+        return np.array(self.Q), np.array(self.weights)
+        
 # ---------------------------
-# Tree HRD (uses node.coreset as sample coreset)
+# Tree HRD
 # ---------------------------
 
 class SphericalHRD:
     def __init__(self, k, d_split, r_expert,
                  n_min, epsilon_hrd, epsilon_exp=1e-3, n_max_leaf=500,
-                 used_directions=None, coreset_capacity=50):
+                 used_directions=None):
         self.k = k
         self.d = min(d_split, k)  # cannot exceed k
         self.r_expert = r_expert  # number of centroids per expert (basis size)
@@ -267,9 +245,8 @@ class SphericalHRD:
         self.epsilon_exp = epsilon_exp
         self.n_max_leaf = n_max_leaf
         self.used_directions = used_directions
-        self.coreset_capacity = coreset_capacity
         # root node
-        self.root = Node(k=k, parent=None, depth=0, coreset_capacity=self.coreset_capacity)
+        self.root = Node(k=k, parent=None, depth=0)
         # list (dict) of current leaf nodes by id
         self.leaves = {self.root.id: self.root}
         # maintain expert registry (leaf.id -> expert basis)
@@ -283,23 +260,27 @@ class SphericalHRD:
             mask = get_child_index(u, node.V, node.b)
             if mask not in node.children:
                 # lazy-create child
-                child = Node(k=self.k, parent=node, depth=node.depth + 1, coreset_capacity=self.coreset_capacity)
+                child = Node(k=self.k, parent=node, depth=node.depth + 1)
                 node.children[mask] = child
                 self.leaves[child.id] = child
             node = node.children[mask]
         return node
 
     def update_leaf(self, node, u):
-        # increment total count for the node and update coreset (reservoir)
         node.n += 1
-        node.add_point_to_coreset(u)
-        node.recompute_centroid_from_coreset()
-        # update angular/proxy stats
-        node.min_dot_est = min(node.min_dot_est, float(np.dot(node.c, u))) if node.c is not None else node.min_dot_est
-        # keep residuals for diagnostics (distance to centroid)
-        if node.c is not None:
-            node.residuals.append(np.sum((u - (node.c * np.dot(u, node.c))) ** 2))
-        # note: we don't maintain full-data sums here (memory-bounded)
+        node.s += u
+        node.Rlen = np.linalg.norm(node.s)
+        if node.Rlen > 0:
+            node.r_bar = node.Rlen / node.n
+            node.c = node.s / node.Rlen
+        else:
+            node.r_bar = 0.0
+            node.c = normalize(node.s)
+        node.min_dot_est = min(node.min_dot_est, np.dot(node.c, u))
+        # expert update via buffering; keep sample (unit vector)
+        node.buffer.append(u.copy())
+        # TODO: we no longer compute per-node SVD-based basis here. Experts will be constructed
+        # globally from region centroids. Keep buffer for stability / future uses.
 
     def should_split(self, node, x_t):
         if node.n >= self.n_max_leaf:
@@ -308,9 +289,9 @@ class SphericalHRD:
         if node.n < self.n_min:
             return False
 
-        # compute min angular distance from new point x_t to any point in the node.coreset
-        min_angular_dist = float('inf')
-        for p in list(node.coreset):
+        # compute min angular distance from new point x_t to any point in the region (in buffer)
+        min_angular_dist = float('inf') #infinity for min
+        for p in list(node.buffer):
             dist = angular_distance(p, x_t)
             min_angular_dist = min(min_angular_dist, dist)
 
@@ -324,13 +305,13 @@ class SphericalHRD:
         return node.angular_diameter > decision
 
     def update_angular_diameter(self, node):
-        """Compute max angular distance between any two coreset points in node.coreset."""
-        if len(node.coreset) < 2:
+        """Compute max angular distance between any two points in node.buffer."""
+        if len(node.buffer) < 2:
             node.angular_diameter = 0.0
             return
 
         max_dist = 0.0
-        buffer_list = list(node.coreset)
+        buffer_list = list(node.buffer)
         for i in range(len(buffer_list)):
             for j in range(i + 1, len(buffer_list)):
                 dist = angular_distance(buffer_list[i], buffer_list[j])
@@ -346,7 +327,7 @@ class SphericalHRD:
             node.c = np.zeros(self.k)
             node.c[0] = 1.0
         # sample splitting frame V
-        V = sample_splitting_frame(node.c, self.d, self.k, node.depth, points=list(node.coreset),
+        V = sample_splitting_frame(node.c, self.d, self.k, node.depth, points=list(node.buffer),
                                    used_directions=self.used_directions)
         # ensure V has exactly d columns (if fewer, pad using orthonormalization trick)
         if V.shape[1] < self.d:
@@ -373,21 +354,18 @@ class SphericalHRD:
         if node.id in self.leaves:
             del self.leaves[node.id]
         
-        # redistribute coreset points to child regions, only create regions that are necessary
-        for u in list(node.coreset):
+        # redistribute buffer points to child regions, only create regions that are necessary
+        for u in list(node.buffer):
             mask = get_child_index(u, V, b)
             if mask not in node.children:
-                child = Node(k=self.k, parent=node, depth=node.depth + 1, coreset_capacity=self.coreset_capacity)
+                child = Node(k=self.k, parent=node, depth=node.depth + 1)
                 node.children[mask] = child
                 self.leaves[child.id] = child
             child = node.children[mask]
-            # update child using coreset point (treat as if it's a new observation)
-            child.n += 1
-            child.add_point_to_coreset(u)
-            child.recompute_centroid_from_coreset()
+            self.update_leaf(child, u)
         
-        # clear parent coreset (keep stats maybe)
-        node.coreset.clear()
+        # clear parent buffer (keep stats maybe)
+        node.buffer.clear()
         return list(node.children.values())
 
     def _construct_experts_from_region_centroids(self):
@@ -396,7 +374,7 @@ class SphericalHRD:
         For each leaf p: choose p.c plus its r-1 nearest other leaf centroids (by angular distance),
         orthonormalize them -> leaf.expert_basis.
         """
-        # collect centroids for all leaves that have at least one point (from coreset)
+        # collect centroids for all leaves that have at least one point
         leaf_nodes = [nd for nd in self.leaves.values() if nd.c is not None]
         if len(leaf_nodes) == 0:
             return
@@ -416,7 +394,6 @@ class SphericalHRD:
         self.t += 1
         u = normalize(x)
         node = self.route(u)
-        # update only via coreset (no full-data sums)
         self.update_leaf(node, u)
         # update angular diameter for this node (and possibly ancestors if desired)
         self.update_angular_diameter(node)
@@ -471,10 +448,9 @@ def build_combined_basis_from_region_ids(hrd, region_ids, max_dim=None):
         return []
     M = np.column_stack([normalize(v) for v in vecs])
     M_orth = gram_schmidt(M)
-    if max_dim is not None and M_orth.size > 0:
+    if max_dim is not None:
         M_orth = M_orth[:, :max_dim]
-    # return as list of column vectors
-    return [M_orth[:, i].copy() for i in range(M_orth.shape[1])] if M_orth.size > 0 else []
+    return [M_orth[:, i].copy() for i in range(M_orth.shape[1])]
 
 # ---------------------------
 # Expert-based MWUA: experts are sets of r leaf regions
@@ -551,6 +527,8 @@ class ExpertMWUA:
         """
         pool = list(pool)
         if len(pool) < self.r:
+            # Not enough distinct regions: allow duplicates? better just return singletons repeated
+            # We'll return tuples with repetition of the available pool
             combos = set()
             for comb in itertools.combinations_with_replacement(pool, self.r):
                 combos.add(tuple(sorted(comb)))
@@ -565,7 +543,7 @@ class ExpertMWUA:
         # Too many combos: choose top combos by product-of-priors
         # compute scores for all combos but only store top_k by score
         scored = []
-        # To avoid enumerating all of them (which could still be large), enumerate combinations but cut early
+        # To avoid enumerating all (which could still be large), enumerate combinations but cut early
         # We'll enumerate combos in lexicographic order but maintain a shortlist of top by product score.
         # If pool is reasonably small (e.g., <= 25), this is fine.
         if len(pool) <= 25:
@@ -743,7 +721,7 @@ def main():
 
     # Create HRD and ExpertMWUA
     hrd = SphericalHRD(k=k, d_split=4, r_expert=2,
-                       n_min=10, epsilon_hrd=0.2, n_max_leaf=200, coreset_capacity=50)
+                       n_min=10, epsilon_hrd=0.2, n_max_leaf=200)
     # ExpertMWUA: each expert is a set of r_expert regions (we choose r_expert=2 for demo)
     mw = ExpertMWUA(hrd, eta=0.5, r_expert=2,
                     candidate_pool_size=12, max_experts=300, combined_basis_dim=3, random_seed=0)
@@ -770,7 +748,7 @@ def main():
     plt.plot(mw.cum_loss[1:], label='Cumulative Expert-MWUA loss')
     plt.xlabel('t')
     plt.ylabel('Cumulative loss')
-    plt.title('Expert-MWUA over Spherical HRD (demo) — experts = r-region sets (coreset centers)')
+    plt.title('Expert-MWUA over Spherical HRD (demo) — experts = r-region sets')
     plt.grid(True)
     plt.legend()
     plt.show()
