@@ -16,15 +16,7 @@ def normalize_rows(X, eps=1e-12):
     norms[norms < eps] = 1.0
     return X / norms
 
-# ---------------------------
-# Your MWUA + HRD code here
-# ---------------------------
-# assume ExpertMWUA, HRD etc. are already defined from your code
-# e.g. from your script above, just import or paste those class definitions
 
-# ---------------------------
-# Load MNIST
-# ---------------------------
 def run_MNIST_data():
     print("Downloading MNIST...")
     mnist = fetch_openml('mnist_784', version=1, as_frame=False)
@@ -33,9 +25,7 @@ def run_MNIST_data():
 
     print("MNIST shape:", X.shape)  # 70000 by 784
 
-    # ---------------------------
-    # Dimensionality reduction
-    # ---------------------------
+
     k = 20 
     d_split = 15
     r_expert = 10
@@ -43,26 +33,35 @@ def run_MNIST_data():
     svd = TruncatedSVD(n_components=k, random_state=42)
     X_reduced = svd.fit_transform(X)
 
-    # Normalize to unit vectors
     X_unit = normalize_rows(X_reduced)
 
-    # ---------------------------
-    # Stream into ExpertMWUA
-    # ---------------------------
+
     hrd = SphericalHRD(k=k, d_split=d_split, r_expert=r_expert, n_min=20, epsilon_hrd=0.1, n_max_leaf=100)
     mw = ExpertMWUA(hrd, eta=0.5, r_expert=r_expert,
                     candidate_pool_size=12, max_experts=300, combined_basis_dim=r_expert, random_seed=0)
-        
+    
+    badnet = BadNetBaseline(k=k, r=r_expert) #this is the bad net generated in experiments class 
+    
+ 
     hrd_losses = []
-    print("Streaming MNIST vectors into ExpertMWUA...")
-    for i, x in enumerate(X_unit[:200]):  # limit to 2000 for speed; adjust as needed
+    badnet_losses = []
+    
+    print("Streaming MNIST vectors into both algorithms...")
+    for i, x in enumerate(X_unit[:200]):  # limit to 200 for speed, adjust as needed
         agg_loss, chosen, basis = mw.step(x)
         hrd_losses.append(agg_loss)
-        if (i+1) % 5 == 0:
-            print(f"Step {i+1}: AggLoss={agg_loss:.4f}, Basis size={len(chosen)}")
+        
+        badnet_loss = badnet.step(x)
+        badnet_losses.append(badnet_loss)
+        
+        if (i+1) % 25 == 0:
+            print(f"Step {i+1}: HRD Loss={agg_loss:.4f}, BadNet Loss={badnet_loss:.4f}, Basis size={len(chosen)}")
+    
     return {
         'hrd_cumulative': mw.cum_loss[1:],
         'hrd_instantaneous': hrd_losses,
+        'badnet_cumulative': badnet.cumulative_loss[1:],
+        'badnet_instantaneous': badnet_losses,
         'num_leaves': len(hrd.leaves)
     }
 def run_Credit_Card_data():
@@ -97,22 +96,16 @@ def run_Credit_Card_data():
     mw = ExpertMWUA(hrd, eta=0.5, r_expert=r_expert,
                     candidate_pool_size=12, max_experts=300, combined_basis_dim=r_expert, random_seed=0)
         
-    # BadNet Baseline
     badnet = BadNetBaseline(k=k, r=r_expert)
     
-    # ---------------------------
-    # Stream data through both algorithms
-    # ---------------------------
     hrd_losses = []
     badnet_losses = []
     
     print("Streaming Credit Card Data vectors into both algorithms...")
     for i, x in enumerate(X_unit[:200]):
-        # HRD Algorithm
         agg_loss, chosen, basis = mw.step(x)
         hrd_losses.append(agg_loss)
         
-        # BadNet Baseline
         badnet_loss = badnet.step(x)
         badnet_losses.append(badnet_loss)
         
@@ -127,28 +120,41 @@ def run_Credit_Card_data():
         'num_leaves': len(hrd.leaves)
     }
 def plot_results(mnist_results, credit_card_results):
-    """Create single plot comparing cumulative losses for both datasets"""
+    """Generate two separate plot images"""
     
-    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-    
-    # MNIST Results
-    ax.plot(mnist_results['hrd_cumulative'], label='MNIST - HRD Algorithm', 
-            linewidth=2, color='blue')
-    
-    # Credit Card Results  
-    ax.plot(credit_card_results['hrd_cumulative'], label='Credit Card - HRD Algorithm', 
-            linewidth=2, color='green')
-    ax.plot(credit_card_results['badnet_cumulative'], label='Credit Card - BadNet Baseline', 
-            linewidth=2, color='red', linestyle='--')
-    
-    ax.set_xlabel('Time Step')
-    ax.set_ylabel('Cumulative Loss')
-    ax.set_title('Cumulative Loss Comparison Across Datasets')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
+    # MNIST Plot - separate figure
+    plt.figure(figsize=(10, 6))
+    plt.plot(mnist_results['hrd_cumulative'], label='HRD Algorithm', 
+             linewidth=2, color='blue')
+    plt.plot(mnist_results['badnet_cumulative'], label='BadNet Baseline', 
+             linewidth=2, color='red', linestyle='--')
+    plt.xlabel('Time Step')
+    plt.ylabel('Cumulative Loss')
+    plt.title('MNIST Dataset - Algorithm Performance Comparison')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
+    plt.savefig('mnist_performance.png', dpi=300, bbox_inches='tight')
     plt.show()
+    
+    # Credit Card Plot - separate figure
+    plt.figure(figsize=(10, 6))
+    plt.plot(credit_card_results['hrd_cumulative'], label='HRD Algorithm', 
+             linewidth=2, color='blue')
+    plt.plot(credit_card_results['badnet_cumulative'], label='BadNet Baseline', 
+             linewidth=2, color='red', linestyle='--')
+    plt.xlabel('Time Step')
+    plt.ylabel('Cumulative Loss')
+    plt.title('Credit Card Dataset - Algorithm Performance Comparison')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('creditcard_performance.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    print("Generated two separate image files:")
+    print("  - mnist_performance.png")
+    print("  - creditcard_performance.png")
 
 def print_summary(results, dataset_name):
     print("\n" + "="*60)
@@ -156,17 +162,33 @@ def print_summary(results, dataset_name):
     print("="*60)
     
     print(f"  HRD Final Loss: {results['hrd_cumulative'][-1]:.4f}")
+    print(f"  BadNet Final Loss: {results['badnet_cumulative'][-1]:.4f}")
+    print(f"  Performance Gap: {results['hrd_cumulative'][-1] - results['badnet_cumulative'][-1]:.4f}")
+    print(f"  Loss Ratio (HRD/BadNet): {results['hrd_cumulative'][-1] / results['badnet_cumulative'][-1]:.3f}")
     
-    # Only print BadNet results if they exist
-    if 'badnet_cumulative' in results:
-        print(f"  BadNet Final Loss: {results['badnet_cumulative'][-1]:.4f}")
-        print(f"  Performance Gap: {results['hrd_cumulative'][-1] - results['badnet_cumulative'][-1]:.4f}")
-        print(f"  Loss Ratio (HRD/BadNet): {results['hrd_cumulative'][-1] / results['badnet_cumulative'][-1]:.3f}")
-        
-        if results['hrd_cumulative'][-1] < results['badnet_cumulative'][-1]:
-            print("  ✓ HRD outperforms BadNet baseline")
-        else:
-            print("  ✗ BadNet baseline outperforms HRD")
+    if results['hrd_cumulative'][-1] < results['badnet_cumulative'][-1]:
+        print("  ✓ HRD outperforms BadNet baseline")
+    else:
+        print("  ✗ BadNet baseline outperforms HRD")
+    
+    print(f"  Number of HRD Leaves: {results['num_leaves']}")
+    
+def print_summary(results, dataset_name):
+    print("\n" + "="*60)
+    print(f"{dataset_name} EXPERIMENT SUMMARY")
+    print("="*60)
+    
+    print(f"  HRD Final Loss: {results['hrd_cumulative'][-1]:.4f}")
+    print(f"  BadNet Final Loss: {results['badnet_cumulative'][-1]:.4f}")
+    print(f"  Performance Gap: {results['hrd_cumulative'][-1] - results['badnet_cumulative'][-1]:.4f}")
+    print(f"  Loss Ratio (HRD/BadNet): {results['hrd_cumulative'][-1] / results['badnet_cumulative'][-1]:.3f}")
+    
+    if results['hrd_cumulative'][-1] < results['badnet_cumulative'][-1]:
+        print("  ✓ HRD outperforms BadNet baseline")
+    else:
+        print("  ✗ BadNet baseline outperforms HRD")
+    
+    print(f"  Number of HRD Leaves: {results['num_leaves']}")
 
 def test_performance_benchmark():
     """Run the complete benchmark experiment"""
@@ -187,8 +209,8 @@ def test_performance_benchmark():
     print("DONE with Credit Card")
     print_summary(credit_card_results, "CREDIT CARD")
     
-    # Single plot with all results
-    print("\nGenerating combined plot...")
+    # Side-by-side plots
+    print("\nGenerating side-by-side plots...")
     plot_results(MNIST_results, credit_card_results)
     
     print("\nBenchmark completed!")

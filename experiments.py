@@ -106,8 +106,8 @@ def run_comparison_experiment():
     results['clustered'] = compare_algorithms(clustered_data, k, d_split, r_expert)
     
     #random uniform data
-    random_data = [normalize(np.random.randn(k)) for _ in range(T)]
-    results['random'] = compare_algorithms(random_data, k, d_split, r_expert)
+    # random_data = [normalize(np.random.randn(k)) for _ in range(T)]
+    # results['random'] = compare_algorithms(random_data, k, d_split, r_expert)
     
     return results
 
@@ -133,47 +133,48 @@ def compare_algorithms(data_sequence, k, d_split, r_expert):
     }
 
 def plot_results(optimal_results, comparison_results):
-    """Create plots comparing the algorithms"""
+    """Generate separate image files for each synthetic dataset"""
     
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-    
-    # Plot 1: Optimal data experiment
-    ax1 = axes[0, 0]
-    ax1.plot(optimal_results['hrd_cumulative'], label='HRD Algorithm', linewidth=2)
-    ax1.plot(optimal_results['bad_cumulative'], label='Bad Net', linewidth=2, linestyle='--')
-    ax1.set_xlabel('Time Step')
-    ax1.set_ylabel('Cumulative Loss')
-    ax1.set_title('Optimal Data')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
-    
-    # Plot 2: Clustered data
-    ax2 = axes[0, 1]
-    ax2.plot(comparison_results['clustered']['hrd_cumulative'], label='HRD Algorithm', linewidth=2)
-    ax2.plot(comparison_results['clustered']['bad_cumulative'], label='Bad Net', linewidth=2, linestyle='--')
-    ax2.set_xlabel('Time Step')
-    ax2.set_ylabel('Cumulative Loss')
-    ax2.set_title('Clustered Data')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    
-    # Plot 3: Random data
-    ax3 = axes[1, 0]
-    ax3.plot(comparison_results['random']['hrd_cumulative'], label='HRD Algorithm', linewidth=2)
-    ax3.plot(comparison_results['random']['bad_cumulative'], label='Bad Net', linewidth=2, linestyle='--')
-    ax3.set_xlabel('Time Step')
-    ax3.set_ylabel('Cumulative Loss')
-    ax3.set_title('Random Data')
-    ax3.legend()
-    ax3.grid(True, alpha=0.3)
-    
-    # Remove the fourth subplot
-    axes[1, 1].remove()
-    
+    # Plot 1: Optimal Data - separate figure
+    plt.figure(figsize=(10, 6))
+    plt.plot(optimal_results['hrd_cumulative'], label='HRD Algorithm', linewidth=2, color='blue')
+    plt.plot(optimal_results['bad_cumulative'], label='Bad Net', linewidth=2, color='red', linestyle='--')
+    plt.xlabel('Time Step')
+    plt.ylabel('Cumulative Loss')
+    plt.title('Optimal Data - Algorithm Performance Comparison')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
     plt.tight_layout()
+    plt.savefig('optimal_data_performance.png', dpi=300, bbox_inches='tight')
     plt.show()
     
-    # Summary plot: all experiments on one graph
+    # Plot 2: Clustered Data - separate figure
+    plt.figure(figsize=(10, 6))
+    plt.plot(comparison_results['clustered']['hrd_cumulative'], label='HRD Algorithm', linewidth=2, color='blue')
+    plt.plot(comparison_results['clustered']['bad_cumulative'], label='Bad Net', linewidth=2, color='red', linestyle='--')
+    plt.xlabel('Time Step')
+    plt.ylabel('Cumulative Loss')
+    plt.title('Clustered Data - Algorithm Performance Comparison')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('clustered_data_performance.png', dpi=300, bbox_inches='tight')
+    plt.show()
+    
+    # Plot 3: Random Data - separate figure
+    # plt.figure(figsize=(10, 6))
+    # plt.plot(comparison_results['random']['hrd_cumulative'], label='HRD Algorithm', linewidth=2, color='blue')
+    # plt.plot(comparison_results['random']['bad_cumulative'], label='Bad Net', linewidth=2, color='red', linestyle='--')
+    # plt.xlabel('Time Step')
+    # plt.ylabel('Cumulative Loss')
+    # plt.title('Random Data - Algorithm Performance Comparison')
+    # plt.legend()
+    # plt.grid(True, alpha=0.3)
+    # plt.tight_layout()
+    # plt.savefig('random_data_performance.png', dpi=300, bbox_inches='tight')
+    # plt.show()
+    
+    # Plot 4: Summary Comparison - separate figure
     plt.figure(figsize=(10, 6))
     
     # Plot final cumulative loss ratios
@@ -181,23 +182,23 @@ def plot_results(optimal_results, comparison_results):
     hrd_final = [
         optimal_results['hrd_cumulative'][-1],
         comparison_results['clustered']['hrd_cumulative'][-1],
-        comparison_results['random']['hrd_cumulative'][-1]
+        #comparison_results['random']['hrd_cumulative'][-1]
     ]
     bad_final = [
         optimal_results['bad_cumulative'][-1],
         comparison_results['clustered']['bad_cumulative'][-1],
-        comparison_results['random']['bad_cumulative'][-1]
+        #comparison_results['random']['bad_cumulative'][-1]
     ]
     
     x = np.arange(len(datasets))
     width = 0.35
     
-    plt.bar(x - width/2, hrd_final, width, label='HRD Algorithm', alpha=0.8)
-    plt.bar(x + width/2, bad_final, width, label='Bad Net', alpha=0.8)
+    plt.bar(x - width/2, hrd_final, width, label='HRD Algorithm', alpha=0.8, color='blue')
+    plt.bar(x + width/2, bad_final, width, label='Bad Net', alpha=0.8, color='red')
     
     plt.xlabel('Dataset Type')
     plt.ylabel('Final Cumulative Loss')
-    plt.title('Final Performance Comparison')
+    plt.title('Final Performance Comparison Across Synthetic Datasets')
     plt.xticks(x, datasets)
     plt.legend()
     plt.grid(True, alpha=0.3)
@@ -209,7 +210,14 @@ def plot_results(optimal_results, comparison_results):
                 ha='center', va='bottom', fontweight='bold')
     
     plt.tight_layout()
+    plt.savefig('synthetic_summary_comparison.png', dpi=300, bbox_inches='tight')
     plt.show()
+    
+    print("Generated four separate image files:")
+    print("  - optimal_data_performance.png")
+    print("  - clustered_data_performance.png") 
+    print("  - random_data_performance.png")
+    print("  - synthetic_summary_comparison.png")
 
 def print_summary(optimal_results, comparison_results):
     print("\n" + "="*60)
@@ -223,7 +231,7 @@ def print_summary(optimal_results, comparison_results):
     print(f"  HRD Improvement: {improvement:.2f}%")
     print(f"  Number of Leaves Created: {optimal_results['num_leaves']}")
     
-    for dataset in ['clustered', 'random']:
+    for dataset in ['clustered']:
         result = comparison_results[dataset]
         print(f"\n{dataset.capitalize()} Data:")
         print(f"  HRD Final Loss: {result['hrd_cumulative'][-1]:.4f}")
