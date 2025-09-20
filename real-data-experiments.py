@@ -68,33 +68,42 @@ def run_Credit_Card_data():
     print("Fetching Data...")
     file_path = "creditcard.csv"
     data_list = []
-    columns_to_remove = [0]
-    k = 20 
+    
     d_split = 15
     r_expert = 2
+    
     with open(file_path, 'r', newline='') as csvfile:
         reader = csv.reader(csvfile)
-        columns_to_remove = []
+        header = next(reader)
+        
+        print("Header:", header)
+        print("Total columns:", len(header))
+        
+        columns_to_remove = [0, len(header)-2, len(header)-1]  # [0, 29, 30] are not necessary cols 
+        
         for row in reader:
-            pruned_row = [row[i] for i in columns_to_remove]
+            pruned_row = [float(row[i]) for i in range(len(row)) if i not in columns_to_remove]
             data_list.append(pruned_row)
+    
+    X = np.array(data_list)
+    k = X.shape[1]  
 
-    #print("MNIST shape:", X.shape)  # 70000 by 784
 
-    # ---------------------------
-    # Stream into ExpertMWUA
-    # ---------------------------
+    
+    X_unit = normalize_rows(X)
+    
     hrd = SphericalHRD(k=k, d_split=d_split, r_expert=r_expert, n_min=20, epsilon_hrd=0.1, n_max_leaf=100)
     mw = ExpertMWUA(hrd, eta=0.5, r_expert=r_expert,
                     candidate_pool_size=12, max_experts=300, combined_basis_dim=r_expert, random_seed=0)
         
     hrd_losses = []
-    print("Streaming MNIST vectors into ExpertMWUA...")
-    for i, x in enumerate(data_list[:200]):  # limit to 200 for speed; adjust as needed
+    print("Streaming Credit Card Data vectors into ExpertMWUA...")
+    for i, x in enumerate(X_unit[:200]):
         agg_loss, chosen, basis = mw.step(x)
         hrd_losses.append(agg_loss)
         if (i+1) % 5 == 0:
             print(f"Step {i+1}: AggLoss={agg_loss:.4f}, Basis size={len(chosen)}")
+    
     return {
         'hrd_cumulative': mw.cum_loss[1:],
         'hrd_instantaneous': hrd_losses,
@@ -119,7 +128,7 @@ def print_summary(results):
     print("EXPERIMENT SUMMARY")
     print("="*60)
     
-    print(f"\nMNIST Experiment:")
+    print(f"Credit Card Experiment:")
     print(f"  HRD Final Loss: {results['hrd_cumulative'][-1]:.4f}")
 
 
@@ -133,11 +142,21 @@ def test_performance_benchmark():
     print("DONE with MNIST")
     
     print_summary(MNIST_results)
+
+    
+    Run Credit Card test
+    print("\nRunning Credit Card dataset...")
+    credit_card_results = run_Credit_Card_data()
+    print("DONE with Credit Card")
+    print_summary(credit_card_results)
     
     print("\nGenerating plots...")
-    plot_results(MNIST_results)
+    #plot_results(MNIST_results)
+    plot_results(credit_card_results)  
+    
     print("\nBenchmark completed!")
-    return MNIST_results
+
+    return MNIST_results, credit_card_results
 
 print("here")
 test_performance_benchmark()
