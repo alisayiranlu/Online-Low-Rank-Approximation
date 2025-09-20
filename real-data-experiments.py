@@ -97,67 +97,102 @@ def run_Credit_Card_data():
     mw = ExpertMWUA(hrd, eta=0.5, r_expert=r_expert,
                     candidate_pool_size=12, max_experts=300, combined_basis_dim=r_expert, random_seed=0)
         
+    # BadNet Baseline
+    badnet = BadNetBaseline(k=k, r=r_expert)
+    
+    # ---------------------------
+    # Stream data through both algorithms
+    # ---------------------------
     hrd_losses = []
-    print("Streaming Credit Card Data vectors into ExpertMWUA...")
+    badnet_losses = []
+    
+    print("Streaming Credit Card Data vectors into both algorithms...")
     for i, x in enumerate(X_unit[:200]):
+        # HRD Algorithm
         agg_loss, chosen, basis = mw.step(x)
         hrd_losses.append(agg_loss)
-        if (i+1) % 5 == 0:
-            print(f"Step {i+1}: AggLoss={agg_loss:.4f}, Basis size={len(chosen)}")
+        
+        # BadNet Baseline
+        badnet_loss = badnet.step(x)
+        badnet_losses.append(badnet_loss)
+        
+        if (i+1) % 25 == 0:
+            print(f"Step {i+1}: HRD Loss={agg_loss:.4f}, BadNet Loss={badnet_loss:.4f}, Basis size={len(chosen)}")
     
     return {
         'hrd_cumulative': mw.cum_loss[1:],
         'hrd_instantaneous': hrd_losses,
+        'badnet_cumulative': badnet.cumulative_loss[1:],
+        'badnet_instantaneous': badnet_losses,
         'num_leaves': len(hrd.leaves)
     }
-def plot_results(results):
-    """Create plots comparing the algorithms"""
+def plot_results(mnist_results, credit_card_results):
+    """Create single plot comparing cumulative losses for both datasets"""
     
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
     
-    # Plot 1: Optimal data experiment
-    ax1 = axes[0, 0]
-    ax1.plot(results['hrd_cumulative'], label='HRD Algorithm', linewidth=2)
-    ax1.set_xlabel('Time Step')
-    ax1.set_ylabel('Cumulative Loss')
-    ax1.legend()
-    ax1.grid(True, alpha=0.3)
+    # MNIST Results
+    ax.plot(mnist_results['hrd_cumulative'], label='MNIST - HRD Algorithm', 
+            linewidth=2, color='blue')
+    
+    # Credit Card Results  
+    ax.plot(credit_card_results['hrd_cumulative'], label='Credit Card - HRD Algorithm', 
+            linewidth=2, color='green')
+    ax.plot(credit_card_results['badnet_cumulative'], label='Credit Card - BadNet Baseline', 
+            linewidth=2, color='red', linestyle='--')
+    
+    ax.set_xlabel('Time Step')
+    ax.set_ylabel('Cumulative Loss')
+    ax.set_title('Cumulative Loss Comparison Across Datasets')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    
     plt.tight_layout()
     plt.show()
-def print_summary(results):
+
+def print_summary(results, dataset_name):
     print("\n" + "="*60)
-    print("EXPERIMENT SUMMARY")
+    print(f"{dataset_name} EXPERIMENT SUMMARY")
     print("="*60)
     
-    print(f"Credit Card Experiment:")
     print(f"  HRD Final Loss: {results['hrd_cumulative'][-1]:.4f}")
-
+    
+    # Only print BadNet results if they exist
+    if 'badnet_cumulative' in results:
+        print(f"  BadNet Final Loss: {results['badnet_cumulative'][-1]:.4f}")
+        print(f"  Performance Gap: {results['hrd_cumulative'][-1] - results['badnet_cumulative'][-1]:.4f}")
+        print(f"  Loss Ratio (HRD/BadNet): {results['hrd_cumulative'][-1] / results['badnet_cumulative'][-1]:.3f}")
+        
+        if results['hrd_cumulative'][-1] < results['badnet_cumulative'][-1]:
+            print("  ✓ HRD outperforms BadNet baseline")
+        else:
+            print("  ✗ BadNet baseline outperforms HRD")
 
 def test_performance_benchmark():
     """Run the complete benchmark experiment"""
-    print("Starting MNIST Performance Benchmark")
+    print("Starting Performance Benchmark")
     print("=" * 50)
     
     np.random.seed(42)
+    
+    # Run MNIST
+    print("Running MNIST dataset...")
     MNIST_results = run_MNIST_data()
     print("DONE with MNIST")
-    
-    print_summary(MNIST_results)
+    print_summary(MNIST_results, "MNIST")
 
-    
-
+    # Run Credit Card
     print("\nRunning Credit Card dataset...")
     credit_card_results = run_Credit_Card_data()
     print("DONE with Credit Card")
-    print_summary(credit_card_results)
+    print_summary(credit_card_results, "CREDIT CARD")
     
-    print("\nGenerating plots...")
-    plot_results(MNIST_results)
-    plot_results(credit_card_results)  
+    # Single plot with all results
+    print("\nGenerating combined plot...")
+    plot_results(MNIST_results, credit_card_results)
     
     print("\nBenchmark completed!")
-
     return MNIST_results, credit_card_results
 
-print("here")
+
 test_performance_benchmark()
