@@ -1,4 +1,5 @@
 from final_research_c import *
+from experiments import *
 import numpy as np
 import matplotlib.pyplot as plt
 from collections import deque, defaultdict
@@ -144,14 +145,14 @@ def test_performance_benchmark():
     print_summary(MNIST_results)
 
     
-    Run Credit Card test
+
     print("\nRunning Credit Card dataset...")
     credit_card_results = run_Credit_Card_data()
     print("DONE with Credit Card")
     print_summary(credit_card_results)
     
     print("\nGenerating plots...")
-    #plot_results(MNIST_results)
+    plot_results(MNIST_results)
     plot_results(credit_card_results)  
     
     print("\nBenchmark completed!")
