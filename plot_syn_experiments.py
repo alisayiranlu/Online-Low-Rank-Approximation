@@ -6,13 +6,13 @@ def plot_synthetic_cumulative_comparison():
     """Load synthetic CSV files and create cumulative loss comparison plots"""
     
     datasets = ['optimal', 'clustered']
-    k_values = [5, 10, 15]
+    k_values = [2, 5, 10]
     
     data = {}
     for dataset in datasets:
         data[dataset] = {}
         for k in k_values:
-            filename = f'{dataset}_data_k{k}_results.csv'
+            filename = f'{dataset}_data_r{k}_results.csv'
             try:
                 df = pd.read_csv(filename)
                 data[dataset][k] = df
