@@ -57,7 +57,7 @@ def generate_clustered_data_sequence(T, k=5):
         clustered_data.append(x)
     return clustered_data
 
-def run_single_experiment(data_sequence, k, r_expert=2):
+def run_single_experiment(data_sequence, k, r_expert):  # Made r_expert required parameter
     d_split = min(4, k-1) 
     
     hrd = SphericalHRD(k=k, d_split=d_split, r_expert=r_expert, n_min=20, epsilon_hrd=0.1, n_max_leaf=100)
@@ -87,10 +87,10 @@ def run_single_experiment(data_sequence, k, r_expert=2):
         'num_leaves': len(hrd.leaves)
     }
 
-def run_experiments_multiple_k():
+def run_experiments_multiple_r_expert():  # Renamed function
     T = 1000
-    k_values = [5, 10, 15]  
-    r_expert = 2
+    k = 5  # Fixed k value
+    r_expert_values = [2, 5, 10]  # Changed to vary r_expert instead of k
     
     results = {
         'optimal': {},
@@ -98,30 +98,30 @@ def run_experiments_multiple_k():
     }
     
     np.random.seed(42)  
-    for k in k_values:
+    for r_expert in r_expert_values:  # Loop over r_expert values
         print(f"\n{'='*50}")
-        print(f"Running experiments with k={k}")
+        print(f"Running experiments with r_expert={r_expert} (k fixed at {k})")
         print(f"{'='*50}")
         
-        print(f"Optimal data experiment (k={k})...")
+        print(f"Optimal data experiment (r_expert={r_expert})...")
         optimal_data = generate_optimal_data_sequence(T, k)
-        results['optimal'][k] = run_single_experiment(optimal_data, k, r_expert)
+        results['optimal'][r_expert] = run_single_experiment(optimal_data, k, r_expert)
         
-        print(f"Clustered data experiment (k={k})...")
+        print(f"Clustered data experiment (r_expert={r_expert})...")
         clustered_data = generate_clustered_data_sequence(T, k)
-        results['clustered'][k] = run_single_experiment(clustered_data, k, r_expert)
+        results['clustered'][r_expert] = run_single_experiment(clustered_data, k, r_expert)
     
     return results
 
-def save_results_to_csv(all_results, k_values):
+def save_results_to_csv(all_results, r_expert_values):  # Updated parameter name
     print("\nSaving results to CSV files...")
     
     datasets = ['optimal', 'clustered']
     saved_files = []
     
     for dataset in datasets:
-        for k in k_values:
-            result = all_results[dataset][k]
+        for r_expert in r_expert_values:  # Loop over r_expert values
+            result = all_results[dataset][r_expert]
             
             df = pd.DataFrame({
                 'time_step': range(len(result['hrd_cumulative'])),
@@ -132,23 +132,25 @@ def save_results_to_csv(all_results, k_values):
             })
             
             df['dataset'] = dataset
-            df['k_dimension'] = k
+            df['k_dimension'] = 5  # Fixed k value
+            df['r_expert'] = r_expert  # Added r_expert column
             df['num_leaves'] = result['num_leaves']
             
             df['improvement_percentage'] = ((df['bad_cumulative_loss'] - df['hrd_cumulative_loss']) / df['bad_cumulative_loss'] * 100)
             
-            filename = f'{dataset}_data_k{k}_results.csv'
+            filename = f'{dataset}_data_r{r_expert}_results.csv'  # Updated filename
             df.to_csv(filename, index=False)
             saved_files.append(filename)
             print(f"  Saved: {filename}")
     
     summary_data = []
     for dataset in datasets:
-        for k in k_values:
-            result = all_results[dataset][k]
+        for r_expert in r_expert_values:  # Loop over r_expert values
+            result = all_results[dataset][r_expert]
             summary_data.append({
                 'dataset': dataset,
-                'k_dimension': k,
+                'k_dimension': 5,  # Fixed k value
+                'r_expert': r_expert,  # Added r_expert
                 'hrd_final_loss': result['hrd_cumulative'][-1],
                 'bad_final_loss': result['bad_cumulative'][-1],
                 'improvement_percentage': ((result['bad_cumulative'][-1] - result['hrd_cumulative'][-1]) / result['bad_cumulative'][-1] * 100),
@@ -164,9 +166,10 @@ def save_results_to_csv(all_results, k_values):
     
     return saved_files
 
-def print_detailed_summary(all_results, k_values):
+def print_detailed_summary(all_results, r_expert_values):  # Updated parameter name
     print("\n" + "="*80)
     print("COMPREHENSIVE EXPERIMENT SUMMARY")
+    print("Fixed k=5, varying r_expert values")  # Updated description
     print("="*80)
     
     datasets = ['optimal', 'clustered']
@@ -176,31 +179,32 @@ def print_detailed_summary(all_results, k_values):
         print(f"\n{label}:")
         print("-" * len(label))
         
-        for k in k_values:
-            result = all_results[dataset][k]
+        for r_expert in r_expert_values:  # Loop over r_expert values
+            result = all_results[dataset][r_expert]
             hrd_final = result['hrd_cumulative'][-1]
             bad_final = result['bad_cumulative'][-1]
             improvement = (bad_final - hrd_final) / bad_final * 100
             
-            print(f"  k={k}:")
+            print(f"  r_expert={r_expert}:")  # Updated print statement
             print(f"    HRD Final Loss: {hrd_final:.4f}")
             print(f"    Bad Net Final Loss: {bad_final:.4f}")
             print(f"    HRD Improvement: {improvement:.2f}%")
             print(f"    Number of Leaves: {result['num_leaves']}")
             print()
    
-def test_performance_benchmark_multiple_k():
+def test_performance_benchmark_multiple_r_expert():  # Renamed function
     print("Starting Enhanced HRD Algorithm Performance Benchmark")
-    print("Testing multiple dimensionalities (k values)")
+    print("Fixed k=5, testing multiple r_expert values")  # Updated description
+    print("r_expert values: [2, 5, 10]")  # Updated description
     print("=" * 60)
     
-    all_results = run_experiments_multiple_k()
-    k_values = [5, 10, 15]
+    all_results = run_experiments_multiple_r_expert()  # Updated function call
+    r_expert_values = [2, 5, 10]  # Updated variable name
     
-    print_detailed_summary(all_results, k_values)
+    print_detailed_summary(all_results, r_expert_values)  # Updated parameter
     
     print("\nSaving data to CSV files...")
-    saved_csv_files = save_results_to_csv(all_results, k_values)
+    saved_csv_files = save_results_to_csv(all_results, r_expert_values)  # Updated parameter
     
     print(f"\nGenerated {len(saved_csv_files)} CSV files:")
     for filename in saved_csv_files:
@@ -210,4 +214,4 @@ def test_performance_benchmark_multiple_k():
     return all_results
 
 if __name__ == "__main__":
-    test_performance_benchmark_multiple_k()
+    test_performance_benchmark_multiple_r_expert()  # Updated function call
