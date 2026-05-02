@@ -307,7 +307,7 @@ def run_experiments(
                 dk.setdefault("T", cfg.get("T", 1000))
                 dk.setdefault("d", cfg.get("d", 5))
             X, meta = load_dataset(ds, **dk)
-            print(f"  → {X.shape[0]} samples × {X.shape[1]} features")
+            print(f"  {X.shape[0]} samples x {X.shape[1]} features")
             loaded[ds] = (X, meta)
         except Exception as e:
             print(f"  [ERROR] Could not load {ds}: {e}")

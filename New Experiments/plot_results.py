@@ -38,7 +38,7 @@ ALG_STYLE = {
     "OfflineOptimum":{"color": "#d62728", "lw": 2.0, "ls": "--",  "label": "Offline Optimum"},
     "StreamingSVD":  {"color": "#ff7f0e", "lw": 2.0, "ls": "--",  "label": "Streaming SVD"},
     "FTRL":          {"color": "#8c564b", "lw": 2.0, "ls": "-.",  "label": "FTRL"},
-    "BadNet":        {"color": "#7f7f7f", "lw": 1.5, "ls": ":",   "label": "Fixed Baseline"},
+    "BadNet":        {"color": "#222222", "lw": 2.0, "ls": ":",   "label": "Fixed Baseline"},
 }
 
 
