@@ -1,0 +1,13 @@
+# Core numerical stack
+numpy>=1.24
+scipy>=1.10
+
+# Dataset preprocessing / dimensionality reduction
+scikit-learn>=1.3
+
+# Results loading and plotting
+pandas>=2.0
+matplotlib>=3.7
+
+# Optional: only needed if you want to download Kaggle datasets from Python/CLI
+# kaggle>=1.6

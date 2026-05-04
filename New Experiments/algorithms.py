@@ -607,8 +607,8 @@ ALL_ALGORITHMS = [
     "GrassmannHRD",
     "FantopeOGD",
     "OfflineOptimum",
-    "StreamingSVD",
     "FTRL",
+    "BadNet",
 ]
 
 # Optional extras — not run by default

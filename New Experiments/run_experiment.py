@@ -23,6 +23,12 @@ Usage
                            --algorithms GrassmannHRD FantopeOGD OfflineOptimum \\
                            --k_values 10 15
 
+  # Run MovieLens 20M from the Kaggle/GroupLens zip
+  python run_experiment.py --datasets MovieLens20M \\
+                           --movielens_path archive.zip \\
+                           --algorithms GrassmannHRD FantopeOGD OfflineOptimum \\
+                           --k_values 10 15 20
+
   # List what would run without running it
   python run_experiment.py --dry_run
 
@@ -70,6 +76,17 @@ DEFAULT_CONFIG = {
         "T": 500, "d": 28,
         "k_values": [10, 15, 20],
         "dataset_kwargs": {},
+    },
+    "MovieLens20M": {
+        "T": 500, "d": 50,
+        "k_values": [10, 15, 20],
+        "dataset_kwargs": {
+            "n_samples": 500,
+            "n_movies": 1000,
+            "d_reduced": 50,
+            "min_ratings_per_user": 20,
+            "center_ratings": True,
+        },
     },
 }
 
@@ -248,6 +265,7 @@ def run_experiments(
     dry_run=False,
     save_every=50,
     creditcard_path="creditcard.csv",
+    movielens_path="ml-20m.zip",
     resume=True,
 ):
     """
@@ -263,6 +281,7 @@ def run_experiments(
     dry_run         : just print planned runs, do not execute
     save_every      : flush CSV to disk every N steps
     creditcard_path : path to creditcard.csv (Kaggle)
+    movielens_path  : path to MovieLens 20M zip/folder/rating.csv
     resume          : continue partial runs from last completed step
     """
     datasets   = datasets   or ALL_DATASETS
@@ -300,6 +319,9 @@ def run_experiments(
             dk = dict(cfg.get("dataset_kwargs", {}))
             if ds == "CreditCard":
                 dk.setdefault("path", creditcard_path)
+                dk.setdefault("n_samples", cfg.get("T", 500))
+            elif ds == "MovieLens20M":
+                dk.setdefault("path", movielens_path)
                 dk.setdefault("n_samples", cfg.get("T", 500))
             elif ds == "MNIST":
                 dk.setdefault("n_samples", cfg.get("T", 500))
@@ -378,6 +400,8 @@ def _parse_args():
                    help="Directory for CSV results (default: results/)")
     p.add_argument("--creditcard_path", default="creditcard.csv",
                    help="Path to creditcard.csv (download from Kaggle)")
+    p.add_argument("--movielens_path", default="ml-20m.zip",
+                   help="Path to MovieLens 20M zip, extracted folder, or rating.csv/ratings.csv")
     p.add_argument("--force",      action="store_true",
                    help="Re-run even if a completed CSV already exists")
     p.add_argument("--no_resume",  action="store_true",
@@ -400,5 +424,6 @@ if __name__ == "__main__":
         dry_run=args.dry_run,
         save_every=args.save_every,
         creditcard_path=args.creditcard_path,
+        movielens_path=args.movielens_path,
         resume=not args.no_resume,
     )
