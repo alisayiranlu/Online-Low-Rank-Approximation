@@ -5,38 +5,28 @@ Experiment runner for online low-rank approximation benchmarks.
 
 Design principles
 -----------------
-- Each (dataset, algorithm, k) triple is fully independent: results are written
-  to a separate CSV so a crash never loses completed work.
-- Adaptive/incremental recording: rows are flushed to disk every `save_every`
-  steps, so partial runs are always usable.
-- Resume support: if a CSV for a run already exists, the runner detects the last
-  completed step and continues from there without replaying from scratch.
-- Skip logic: completely finished runs are skipped unless --force is passed.
+- Each (dataset, algorithm, k) triple writes to one CSV; multiple trials are
+  stored as separate rows distinguished by the `trial` column.
+- Rows are flushed every `save_every` steps so partial runs are usable.
+- Resume support: completed trials are detected from the CSV and skipped.
+- Skip logic: all n_trials complete -> skip unless --force is passed.
 
 Usage
 -----
-  # Run everything with defaults
+  # Run MNIST and MovieLens20M with 10 trials each (defaults)
   python run_experiment.py
 
-  # Run specific datasets and algorithms
-  python run_experiment.py --datasets MNIST CreditCard \\
-                           --algorithms GrassmannHRD FantopeOGD OfflineOptimum \\
-                           --k_values 10 15
+  # Fewer trials, specific datasets
+  python run_experiment.py --n_trials 5 --datasets MNIST
 
-  # Run MovieLens 20M from the Kaggle/GroupLens zip
-  python run_experiment.py --datasets MovieLens20M \\
-                           --movielens_path archive.zip \\
-                           --algorithms GrassmannHRD FantopeOGD OfflineOptimum \\
-                           --k_values 10 15 20
+  # MovieLens path (zip or extracted folder)
+  python run_experiment.py --movielens_path ml-20m.zip
 
-  # List what would run without running it
-  python run_experiment.py --dry_run
-
-  # Re-run even if CSV already exists
+  # Re-run from scratch
   python run_experiment.py --force
 
-  # Add optional algorithms (SphericalHRD needs final_research_c.py; BadNet is fixed baseline)
-  python run_experiment.py --algorithms GrassmannHRD BadNet SphericalHRD
+  # Dry run
+  python run_experiment.py --dry_run
 """
 
 import argparse
@@ -57,50 +47,26 @@ from datasets import load_dataset, ALL_DATASETS
 # ─────────────────────────────────────────────────────────────
 
 DEFAULT_CONFIG = {
-    "SyntheticOptimal": {
-        "T": 1000, "d": 5,
-        "k_values": [2, 5, 10],
-        "dataset_kwargs": {},
-    },
-    "SyntheticClustered": {
-        "T": 1000, "d": 5,
-        "k_values": [2, 5, 10],
-        "dataset_kwargs": {},
-    },
     "MNIST": {
-        "T": 500, "d": 50,
+        "T": 5000, "d": 50,
         "k_values": [10, 15, 20],
         "dataset_kwargs": {"d_reduced": 50},
     },
-    "CreditCard": {
-        "T": 500, "d": 28,
-        "k_values": [10, 15, 20],
-        "dataset_kwargs": {},
-    },
     "MovieLens20M": {
-        "T": 500, "d": 50,
+        "T": 2000, "d": 50,
         "k_values": [10, 15, 20],
-        "dataset_kwargs": {
-            "n_samples": 500,
-            "n_movies": 1000,
-            "d_reduced": 50,
-            "min_ratings_per_user": 20,
-            "center_ratings": True,
-        },
+        "dataset_kwargs": {"d_reduced": 50},
     },
 }
 
-# Algorithms that need the full data array at construction time
 NEEDS_FULL_DATA = {"OfflineOptimum"}
 
-# Algorithm-specific hyperparameter overrides (on top of (d, k))
 ALG_KWARGS = {
     "GrassmannHRD":  {"eta": 0.5, "n_min": 10, "n_max": 100, "epsilon_hrd": 0.1},
     "FantopeOGD":    {"init_steps": 50},
     "OfflineOptimum":{},
     "StreamingSVD":  {},
     "FTRL":          {"reg": 1.0},
-    # Optional algorithms
     "SphericalHRD":  {"eta": 0.5, "n_min": 20, "n_max": 100, "epsilon_hrd": 0.1},
     "BadNet":        {},
 }
@@ -111,7 +77,7 @@ ALG_KWARGS = {
 # ─────────────────────────────────────────────────────────────
 
 CSV_FIELDS = [
-    "dataset", "algorithm", "k", "d", "step",
+    "dataset", "algorithm", "k", "d", "trial", "step",
     "instantaneous_loss", "cumulative_loss", "n_leaves",
     "elapsed_s",
 ]
@@ -121,28 +87,28 @@ def _csv_path(out_dir: Path, dataset: str, algorithm: str, k: int) -> Path:
     return out_dir / f"{dataset}__{algorithm}__k{k}.csv"
 
 
-def _open_csv(path: Path, append: bool):
-    """Open CSV for writing (or appending). Returns (file_handle, writer, start_step)."""
-    if append and path.exists():
-        last_step = 0
-        with open(path, newline="") as f:
-            for row in csv.DictReader(f):
-                try:
-                    last_step = max(last_step, int(row["step"]))
-                except (KeyError, ValueError):
-                    pass
-        fh = open(path, "a", newline="")
-        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
-        return fh, writer, last_step
-    else:
-        fh = open(path, "w", newline="")
-        writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
-        writer.writeheader()
-        return fh, writer, 0
+def _get_completed_trials(path: Path, T: int) -> set:
+    """Return set of trial indices whose step sequence reaches T-1."""
+    if not path.exists():
+        return set()
+    trial_max_step = {}
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        if "trial" not in (reader.fieldnames or []):
+            return set()
+        for row in reader:
+            try:
+                t = int(row["trial"])
+                s = int(row["step"])
+                if t not in trial_max_step or s > trial_max_step[t]:
+                    trial_max_step[t] = s
+            except (KeyError, ValueError):
+                pass
+    return {t for t, max_s in trial_max_step.items() if max_s >= T - 1}
 
 
 # ─────────────────────────────────────────────────────────────
-# Core single-run function
+# Core run function
 # ─────────────────────────────────────────────────────────────
 
 def run_single(
@@ -154,101 +120,113 @@ def run_single(
     out_dir: Path,
     force: bool = False,
     save_every: int = 50,
-    resume: bool = True,
+    n_trials: int = 10,
 ) -> dict:
     """
-    Stream X through `alg_name` with target rank k.
-    Writes one CSV row per step; flushes every `save_every` rows.
-    Returns a summary dict.
+    Stream shuffled copies of X through `alg_name` for n_trials independent
+    trials. Each trial shuffles X with seed=trial_idx so results are
+    reproducible. Writes one CSV row per (trial, step).
     """
     csv_path = _csv_path(out_dir, dataset_name, alg_name, k)
     d = X.shape[1]
     T = len(X)
 
     # ── Skip / resume logic ──────────────────────────────────
-    start_step = 0
-    if not force and csv_path.exists():
-        with open(csv_path, newline="") as f:
-            rows = list(csv.DictReader(f))
-        if rows:
-            last_step = max(int(r["step"]) for r in rows)
-            if last_step >= T - 1:
-                print(f"    [SKIP] {dataset_name}/{alg_name}/k={k} — already complete")
-                return {"skipped": True}
-            if resume:
-                start_step = last_step + 1
-                print(f"    [RESUME] {dataset_name}/{alg_name}/k={k} "
-                      f"from step {start_step}")
+    completed = set()
+    if not force:
+        if csv_path.exists():
+            with open(csv_path, newline="") as f:
+                fields = csv.DictReader(f).fieldnames or []
+            if "trial" not in fields:
+                print(f"    [SKIP] {dataset_name}/{alg_name}/k={k} "
+                      f"-- old single-trial format; use --force to re-run")
+                return {"skipped": True, "reason": "old format"}
+        completed = _get_completed_trials(csv_path, T)
 
-    print(f"    Running {dataset_name} | {alg_name} | k={k} | d={d} | T={T} …",
-          flush=True)
+    trials_needed = [i for i in range(n_trials) if i not in completed]
 
-    # ── Build algorithm ──────────────────────────────────────
+    if not trials_needed:
+        print(f"    [SKIP] {dataset_name}/{alg_name}/k={k} "
+              f"-- all {n_trials} trials complete")
+        return {"skipped": True}
+
+    print(f"    Running {dataset_name} | {alg_name} | k={k} | d={d} | T={T} "
+          f"| trials {trials_needed[0]}-{trials_needed[-1]} ...", flush=True)
+
+    # ── Open CSV ─────────────────────────────────────────────
+    new_file = force or not csv_path.exists()
+    fh = open(csv_path, "w" if new_file else "a", newline="")
+    writer = csv.DictWriter(fh, fieldnames=CSV_FIELDS)
+    if new_file:
+        writer.writeheader()
+
     alg_kw = dict(ALG_KWARGS.get(alg_name, {}))
     if alg_name == "FantopeOGD":
         alg_kw.setdefault("T_est", T)
 
-    try:
-        if alg_name in NEEDS_FULL_DATA:
-            alg = build_algorithm(alg_name, d, k, data=X, **alg_kw)
-        else:
-            alg = build_algorithm(alg_name, d, k, **alg_kw)
-    except ImportError as e:
-        print(f"    [SKIP] {alg_name}: {e}")
-        return {"skipped": True, "reason": str(e)}
-
-    # Fast-forward if resuming (replay without saving)
-    if start_step > 0:
-        print(f"      Fast-forwarding {start_step} steps …", end=" ", flush=True)
-        for i in range(start_step):
-            alg.step(X[i])
-        print("done", flush=True)
-
-    # ── Open CSV ─────────────────────────────────────────────
-    fh, writer, _ = _open_csv(csv_path, append=(start_step > 0))
-    t_start = time.perf_counter()
-    buffer = []
+    t_wall_start = time.perf_counter()
 
     try:
-        for step in range(start_step, T):
-            x = X[step]
-            loss    = alg.step(x)
-            cum     = alg.cum_loss[-1]
-            n_lv    = getattr(alg, "n_leaves", 1)
-            elapsed = time.perf_counter() - t_start
+        for trial_idx in trials_needed:
+            rng = np.random.default_rng(trial_idx)
+            X_trial = X[rng.permutation(T)]
 
-            buffer.append({
-                "dataset":            dataset_name,
-                "algorithm":          alg_name,
-                "k":                  k,
-                "d":                  d,
-                "step":               step,
-                "instantaneous_loss": f"{loss:.6f}",
-                "cumulative_loss":    f"{cum:.6f}",
-                "n_leaves":           n_lv,
-                "elapsed_s":          f"{elapsed:.3f}",
-            })
+            try:
+                if alg_name in NEEDS_FULL_DATA:
+                    alg = build_algorithm(alg_name, d, k, data=X_trial, **alg_kw)
+                else:
+                    alg = build_algorithm(alg_name, d, k, **alg_kw)
+            except ImportError as e:
+                print(f"    [SKIP] {alg_name}: {e}")
+                fh.close()
+                return {"skipped": True, "reason": str(e)}
 
-            if len(buffer) >= save_every or step == T - 1:
-                writer.writerows(buffer)
-                fh.flush()
-                buffer.clear()
+            t_trial = time.perf_counter()
+            buffer = []
 
-            if (step + 1) % 100 == 0 or step == T - 1:
-                print(f"      step {step+1}/{T}  cum_loss={cum:.3f}", flush=True)
+            for step in range(T):
+                x = X_trial[step]
+                loss    = alg.step(x)
+                cum     = alg.cum_loss[-1]
+                n_lv    = getattr(alg, "n_leaves", 1)
+                elapsed = time.perf_counter() - t_trial
+
+                buffer.append({
+                    "dataset":            dataset_name,
+                    "algorithm":          alg_name,
+                    "k":                  k,
+                    "d":                  d,
+                    "trial":              trial_idx,
+                    "step":               step,
+                    "instantaneous_loss": f"{loss:.6f}",
+                    "cumulative_loss":    f"{cum:.6f}",
+                    "n_leaves":           n_lv,
+                    "elapsed_s":          f"{elapsed:.3f}",
+                })
+
+                if len(buffer) >= save_every or step == T - 1:
+                    writer.writerows(buffer)
+                    fh.flush()
+                    buffer.clear()
+
+                if (step + 1) % 1000 == 0 or step == T - 1:
+                    print(f"      trial {trial_idx+1}/{n_trials}  "
+                          f"step {step+1}/{T}  cum={cum:.3f}", flush=True)
+
+            trial_t = time.perf_counter() - t_trial
+            print(f"      Trial {trial_idx} done in {trial_t:.1f}s "
+                  f"-- final cum_loss={alg.cum_loss[-1]:.4f}")
 
     finally:
         fh.close()
 
-    total_t = time.perf_counter() - t_start
-    final_cum = alg.cum_loss[-1]
-    print(f"      Done in {total_t:.1f}s — final cum_loss={final_cum:.4f}")
+    total_t = time.perf_counter() - t_wall_start
+    print(f"    All trials done in {total_t:.1f}s")
     return {
-        "dataset":        dataset_name,
-        "algorithm":      alg_name,
-        "k":              k,
-        "final_cum_loss": final_cum,
-        "elapsed_s":      total_t,
+        "dataset":   dataset_name,
+        "algorithm": alg_name,
+        "k":         k,
+        "elapsed_s": total_t,
     }
 
 
@@ -264,36 +242,18 @@ def run_experiments(
     force=False,
     dry_run=False,
     save_every=50,
-    creditcard_path="creditcard.csv",
+    n_trials=10,
     movielens_path="ml-20m.zip",
-    resume=True,
 ):
-    """
-    Run the full benchmark grid (or any subset).
-
-    Parameters
-    ----------
-    datasets        : list of dataset names (default: all in ALL_DATASETS)
-    algorithms      : list of algorithm names (default: all in ALL_ALGORITHMS)
-    k_override      : override k values for all datasets
-    output_dir      : directory for CSV results
-    force           : re-run even if a completed CSV exists
-    dry_run         : just print planned runs, do not execute
-    save_every      : flush CSV to disk every N steps
-    creditcard_path : path to creditcard.csv (Kaggle)
-    movielens_path  : path to MovieLens 20M zip/folder/rating.csv
-    resume          : continue partial runs from last completed step
-    """
-    datasets   = datasets   or ALL_DATASETS
+    datasets   = datasets   or list(DEFAULT_CONFIG.keys())
     algorithms = algorithms or ALL_ALGORITHMS
     out_dir    = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build task list
     tasks = []
     for ds in datasets:
         if ds not in DEFAULT_CONFIG:
-            print(f"[WARNING] Unknown dataset '{ds}' — skipping")
+            print(f"[WARNING] Unknown dataset '{ds}' -- skipping")
             continue
         cfg    = DEFAULT_CONFIG[ds]
         k_vals = k_override if k_override else cfg["k_values"]
@@ -301,11 +261,12 @@ def run_experiments(
             for k in k_vals:
                 tasks.append((ds, alg, k, cfg))
 
-    print(f"Planned {len(tasks)} run(s).")
+    print(f"Planned {len(tasks)} run(s) x {n_trials} trial(s) each.")
     if dry_run:
         for ds, alg, k, _ in tasks:
-            csv_path  = _csv_path(out_dir, ds, alg, k)
-            status    = "DONE" if csv_path.exists() else "TODO"
+            csv_path = _csv_path(out_dir, ds, alg, k)
+            done     = _get_completed_trials(csv_path, DEFAULT_CONFIG[ds]["T"])
+            status   = f"DONE({len(done)}/{n_trials})" if done else "TODO"
             print(f"  [{status}] {ds} | {alg} | k={k}")
         return
 
@@ -314,20 +275,14 @@ def run_experiments(
     for ds, alg, k, cfg in tasks:
         if ds in loaded:
             continue
-        print(f"\nLoading dataset: {ds} …")
+        print(f"\nLoading dataset: {ds} ...")
         try:
             dk = dict(cfg.get("dataset_kwargs", {}))
-            if ds == "CreditCard":
-                dk.setdefault("path", creditcard_path)
-                dk.setdefault("n_samples", cfg.get("T", 500))
+            if ds == "MNIST":
+                dk.setdefault("n_samples", cfg.get("T", 5000))
             elif ds == "MovieLens20M":
+                dk.setdefault("n_samples", cfg.get("T", 2000))
                 dk.setdefault("path", movielens_path)
-                dk.setdefault("n_samples", cfg.get("T", 500))
-            elif ds == "MNIST":
-                dk.setdefault("n_samples", cfg.get("T", 500))
-            elif ds in ("SyntheticOptimal", "SyntheticClustered"):
-                dk.setdefault("T", cfg.get("T", 1000))
-                dk.setdefault("d", cfg.get("d", 5))
             X, meta = load_dataset(ds, **dk)
             print(f"  {X.shape[0]} samples x {X.shape[1]} features")
             loaded[ds] = (X, meta)
@@ -335,7 +290,6 @@ def run_experiments(
             print(f"  [ERROR] Could not load {ds}: {e}")
             loaded[ds] = None
 
-    # Run each task
     summaries = []
     for i, (ds, alg, k, cfg) in enumerate(tasks):
         print(f"\n[{i+1}/{len(tasks)}] {ds} | {alg} | k={k}")
@@ -353,7 +307,7 @@ def run_experiments(
                 out_dir=out_dir,
                 force=force,
                 save_every=save_every,
-                resume=resume,
+                n_trials=n_trials,
             )
             summaries.append(summary)
         except Exception as e:
@@ -361,17 +315,16 @@ def run_experiments(
             print(f"  [ERROR] {e}")
             traceback.print_exc()
 
-    # Print final summary table
     completed = [s for s in summaries if not s.get("skipped")]
     if completed:
         print("\n" + "=" * 72)
         print("EXPERIMENT SUMMARY")
         print("=" * 72)
-        print(f"{'Dataset':<22} {'Algorithm':<16} {'k':>3}  {'FinalLoss':>12}  {'Time(s)':>8}")
+        print(f"{'Dataset':<22} {'Algorithm':<16} {'k':>3}  {'Time(s)':>8}")
         print("-" * 72)
         for s in completed:
             print(f"{s['dataset']:<22} {s['algorithm']:<16} {s['k']:>3}  "
-                  f"{s['final_cum_loss']:>12.4f}  {s['elapsed_s']:>8.1f}")
+                  f"{s['elapsed_s']:>8.1f}")
 
     return summaries
 
@@ -387,29 +340,19 @@ def _parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    p.add_argument("--datasets",   nargs="+", default=None,
-                   choices=ALL_DATASETS,
-                   help=f"Datasets to run (default: all). Choices: {ALL_DATASETS}")
-    p.add_argument("--algorithms", nargs="+", default=None,
-                   choices=all_alg_choices,
-                   help=(f"Algorithms to run (default: {ALL_ALGORITHMS}). "
-                         f"Optional extras: {OPTIONAL_ALGORITHMS}"))
-    p.add_argument("--k_values",   nargs="+", type=int, default=None,
-                   help="Override k values for all datasets")
-    p.add_argument("--output_dir", default="results",
-                   help="Directory for CSV results (default: results/)")
-    p.add_argument("--creditcard_path", default="creditcard.csv",
-                   help="Path to creditcard.csv (download from Kaggle)")
+    p.add_argument("--datasets",       nargs="+", default=None,
+                   choices=ALL_DATASETS)
+    p.add_argument("--algorithms",     nargs="+", default=None,
+                   choices=all_alg_choices)
+    p.add_argument("--k_values",       nargs="+", type=int, default=None)
+    p.add_argument("--output_dir",     default="results")
     p.add_argument("--movielens_path", default="ml-20m.zip",
-                   help="Path to MovieLens 20M zip, extracted folder, or rating.csv/ratings.csv")
-    p.add_argument("--force",      action="store_true",
-                   help="Re-run even if a completed CSV already exists")
-    p.add_argument("--no_resume",  action="store_true",
-                   help="Do not resume partial runs (restart from scratch)")
-    p.add_argument("--dry_run",    action="store_true",
-                   help="Print planned tasks without running them")
-    p.add_argument("--save_every", type=int, default=50,
-                   help="Flush CSV to disk every N steps (default: 50)")
+                   help="Path to MovieLens 20M zip or extracted folder")
+    p.add_argument("--n_trials",       type=int, default=10,
+                   help="Number of random-shuffle trials to average (default: 10)")
+    p.add_argument("--force",          action="store_true")
+    p.add_argument("--dry_run",        action="store_true")
+    p.add_argument("--save_every",     type=int, default=50)
     return p.parse_args()
 
 
@@ -423,7 +366,6 @@ if __name__ == "__main__":
         force=args.force,
         dry_run=args.dry_run,
         save_every=args.save_every,
-        creditcard_path=args.creditcard_path,
+        n_trials=args.n_trials,
         movielens_path=args.movielens_path,
-        resume=not args.no_resume,
     )

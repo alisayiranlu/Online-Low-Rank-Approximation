@@ -3,23 +3,20 @@ plot_results.py
 ===============
 Load experiment CSVs and produce publication-ready plots.
 
+When CSVs contain multiple trials (a `trial` column), curves show the
+trial-averaged mean with a shaded +/-1 std-dev band.
+
 Usage
 -----
-  # Plot everything in results/
   python plot_results.py
-
-  # Plot specific subset
-  python plot_results.py --datasets MNIST CreditCard \\
-                         --algorithms GrassmannHRD FantopeOGD StreamingSVD \\
-                         --output_dir figures/
-
-  # Show instead of saving
+  python plot_results.py --datasets MNIST MovieLens20M
   python plot_results.py --show
 """
 
 import argparse
 import sys
 from pathlib import Path
+from collections import defaultdict
 
 import matplotlib
 matplotlib.use("Agg")
@@ -41,19 +38,16 @@ ALG_STYLE = {
     "BadNet":        {"color": "#222222", "lw": 2.0, "ls": ":",   "label": "Fixed Baseline"},
 }
 
+SKIP_ALGS = {"StreamingSVD"}
 
 # ─────────────────────────────────────────────────────────────
-# CSV discovery
+# CSV discovery and loading
 # ─────────────────────────────────────────────────────────────
 
 def discover_results(results_dir: Path):
-    """
-    Scan results_dir for CSVs named <dataset>__<algorithm>__k<K>.csv.
-    Returns a list of (dataset, algorithm, k, path) tuples.
-    """
     found = []
     for path in sorted(results_dir.glob("*__*__k*.csv")):
-        stem = path.stem           # e.g. "MNIST__GrassmannHRD__k10"
+        stem = path.stem
         parts = stem.split("__")
         if len(parts) != 3:
             continue
@@ -70,28 +64,57 @@ def discover_results(results_dir: Path):
 
 def load_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
-    df = df.sort_values("step").reset_index(drop=True)
-    return df
+    df = df.sort_values(["trial", "step"] if "trial" in df.columns else ["step"])
+    return df.reset_index(drop=True)
+
+
+def average_trials(df: pd.DataFrame):
+    """
+    Average instantaneous_loss and cumulative_loss across trials.
+
+    Returns (mean_df, std_df). If no `trial` column, std_df is None
+    and mean_df is the original dataframe.
+    """
+    if "trial" not in df.columns:
+        return df, None
+
+    grp = df.groupby("step")
+    mean_df = grp[["instantaneous_loss", "cumulative_loss", "n_leaves"]].mean().reset_index()
+    std_df  = grp[["instantaneous_loss", "cumulative_loss"]].std(ddof=1).reset_index()
+
+    for col in ["dataset", "algorithm", "k", "d"]:
+        if col in df.columns:
+            mean_df[col] = df[col].iloc[0]
+
+    return mean_df, std_df
 
 
 # ─────────────────────────────────────────────────────────────
 # Plotting helpers
 # ─────────────────────────────────────────────────────────────
 
-def plot_cumulative(dataset, k, alg_dfs, out_dir, show=False, fontsize=18):
-    """One figure: cumulative loss of all algorithms on dataset/k."""
+def _shade(ax, x, mean, std, color, alpha=0.25):
+    if std is not None:
+        ax.fill_between(x, mean - std, mean + std, alpha=alpha, color=color, linewidth=0)
+
+
+def plot_cumulative(dataset, k, alg_mean, alg_std, out_dir, show=False, fontsize=18,
+                    show_bands=True):
     fig, ax = plt.subplots(figsize=(9, 5))
 
-    for alg, df in sorted(alg_dfs.items()):
-        style = ALG_STYLE.get(alg, {"color": "black", "lw": 1.5, "ls": "-",
-                                    "label": alg})
-        ax.plot(df["step"], df["cumulative_loss"],
-                color=style["color"], lw=style["lw"],
+    for alg, mean_df in sorted(alg_mean.items()):
+        style = ALG_STYLE.get(alg, {"color": "black", "lw": 1.5, "ls": "-", "label": alg})
+        std_df = alg_std.get(alg)
+        x = mean_df["step"]
+        y = mean_df["cumulative_loss"]
+        ax.plot(x, y, color=style["color"], lw=style["lw"],
                 linestyle=style["ls"], label=style["label"])
+        if show_bands and std_df is not None:
+            _shade(ax, x, y, std_df["cumulative_loss"].values, style["color"])
 
     ax.set_xlabel("Time Step", fontsize=fontsize)
     ax.set_ylabel("Cumulative Loss", fontsize=fontsize)
-    ax.set_title(f"{dataset}  —  k={k}", fontsize=fontsize)
+    ax.set_title(f"{dataset}, k = {k}", fontsize=fontsize)
     ax.legend(fontsize=fontsize - 4, loc="upper left")
     ax.tick_params(labelsize=fontsize - 4)
     ax.grid(alpha=0.3)
@@ -101,27 +124,29 @@ def plot_cumulative(dataset, k, alg_dfs, out_dir, show=False, fontsize=18):
         plt.show()
     else:
         fname = out_dir / f"{dataset}__k{k}__cumulative.png"
-        fig.savefig(fname, dpi=200, bbox_inches="tight")
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
         print(f"  Saved: {fname}")
     plt.close(fig)
 
 
-def plot_instantaneous(dataset, k, alg_dfs, out_dir, show=False, fontsize=18,
-                       window=20):
-    """One figure: smoothed instantaneous loss."""
+def plot_instantaneous(dataset, k, alg_mean, alg_std, out_dir, show=False,
+                       fontsize=18, window=20, show_bands=True):
     fig, ax = plt.subplots(figsize=(9, 5))
 
-    for alg, df in sorted(alg_dfs.items()):
-        style = ALG_STYLE.get(alg, {"color": "black", "lw": 1.5, "ls": "-",
-                                    "label": alg})
-        y = df["instantaneous_loss"].rolling(window, min_periods=1).mean()
-        ax.plot(df["step"], y,
-                color=style["color"], lw=style["lw"],
+    for alg, mean_df in sorted(alg_mean.items()):
+        style = ALG_STYLE.get(alg, {"color": "black", "lw": 1.5, "ls": "-", "label": alg})
+        std_df = alg_std.get(alg)
+        x = mean_df["step"]
+        y = mean_df["instantaneous_loss"].rolling(window, min_periods=1).mean()
+        ax.plot(x, y, color=style["color"], lw=style["lw"],
                 linestyle=style["ls"], label=style["label"], alpha=0.8)
+        if show_bands and std_df is not None:
+            s = std_df["instantaneous_loss"].rolling(window, min_periods=1).mean()
+            _shade(ax, x, y, s, style["color"])
 
     ax.set_xlabel("Time Step", fontsize=fontsize)
     ax.set_ylabel(f"Inst. Loss (rolling {window})", fontsize=fontsize)
-    ax.set_title(f"{dataset}  —  k={k}  (smoothed)", fontsize=fontsize)
+    ax.set_title(f"{dataset}, k = {k} (smoothed)", fontsize=fontsize)
     ax.legend(fontsize=fontsize - 4, loc="upper right")
     ax.tick_params(labelsize=fontsize - 4)
     ax.grid(alpha=0.3)
@@ -131,51 +156,71 @@ def plot_instantaneous(dataset, k, alg_dfs, out_dir, show=False, fontsize=18,
         plt.show()
     else:
         fname = out_dir / f"{dataset}__k{k}__instantaneous.png"
-        fig.savefig(fname, dpi=200, bbox_inches="tight")
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
+        print(f"  Saved: {fname}")
+    plt.close(fig)
+
+
+def plot_cumulative_row(dataset, k_list, out_dir, show=False, fontsize=16, show_bands=True):
+    """One figure, one subplot per k, cumulative loss."""
+    n = len(k_list)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 5), sharey=False)
+    if n == 1:
+        axes = [axes]
+
+    for i, (ax, (k, alg_mean, alg_std)) in enumerate(zip(axes, k_list)):
+        for alg, mean_df in sorted(alg_mean.items()):
+            style = ALG_STYLE.get(alg, {"color": "black", "lw": 1.5, "ls": "-", "label": alg})
+            std_df = alg_std.get(alg)
+            x = mean_df["step"]
+            y = mean_df["cumulative_loss"]
+            ax.plot(x, y, color=style["color"], lw=style["lw"],
+                    linestyle=style["ls"], label=style["label"])
+            if show_bands and std_df is not None:
+                _shade(ax, x, y, std_df["cumulative_loss"].values, style["color"])
+        ax.set_xlabel("Time Step", fontsize=fontsize)
+        ax.set_title(f"k = {k}", fontsize=fontsize)
+        ax.tick_params(labelsize=fontsize - 2)
+        ax.grid(alpha=0.3)
+        if i == 0:
+            ax.set_ylabel("Cumulative Loss", fontsize=fontsize)
+
+    axes[-1].legend(fontsize=fontsize - 2, loc="upper left")
+    fig.suptitle(dataset, fontsize=fontsize + 2, y=1.02)
+    fig.tight_layout()
+
+    if show:
+        plt.show()
+    else:
+        fname = out_dir / f"{dataset}__cumulative_row.png"
+        fig.savefig(fname, dpi=150, bbox_inches="tight")
         print(f"  Saved: {fname}")
     plt.close(fig)
 
 
 def print_summary_table(all_records):
-    """Print a table of final cumulative losses."""
     if not all_records:
         print("No results to summarise.")
         return
 
-    import pandas as pd
     rows = []
-    for ds, alg, k, df in all_records:
-        if df.empty:
+    for ds, alg, k, mean_df, std_df in all_records:
+        if mean_df.empty:
             continue
-        final_cum = df["cumulative_loss"].iloc[-1]
-        n_steps = len(df)
+        final_cum = mean_df["cumulative_loss"].iloc[-1]
+        n_trials  = "n/a" if std_df is None else int(
+            (std_df["cumulative_loss"].notna()).sum() + 1
+        )
         rows.append({"Dataset": ds, "Algorithm": alg, "k": k,
-                     "Steps": n_steps, "FinalCumLoss": final_cum})
+                     "Steps": len(mean_df), "FinalCumLoss(mean)": final_cum})
     if not rows:
         return
 
-    tbl = pd.DataFrame(rows).sort_values(["Dataset", "k", "FinalCumLoss"])
+    tbl = pd.DataFrame(rows).sort_values(["Dataset", "k", "FinalCumLoss(mean)"])
     print("\n" + "=" * 72)
-    print("RESULTS SUMMARY")
+    print("RESULTS SUMMARY  (averaged across trials)")
     print("=" * 72)
     print(tbl.to_string(index=False, float_format="{:.4f}".format))
-
-    # Improvement over BadNet per (dataset, k)
-    print("\n" + "=" * 72)
-    print("IMPROVEMENT vs. Fixed Baseline (BadNet), if available")
-    print("=" * 72)
-    tbl2 = tbl.copy()
-    base = tbl2[tbl2["Algorithm"] == "BadNet"][["Dataset", "k", "FinalCumLoss"]]
-    base = base.rename(columns={"FinalCumLoss": "BadNetLoss"})
-    merged = tbl2[tbl2["Algorithm"] != "BadNet"].merge(base, on=["Dataset", "k"], how="left")
-    merged["Improvement%"] = (
-        (merged["BadNetLoss"] - merged["FinalCumLoss"]) / merged["BadNetLoss"] * 100
-    )
-    merged = merged.dropna(subset=["Improvement%"])
-    if not merged.empty:
-        print(merged[["Dataset", "Algorithm", "k", "FinalCumLoss", "Improvement%"]]
-              .sort_values(["Dataset", "k", "Improvement%"], ascending=[True, True, False])
-              .to_string(index=False, float_format="{:.2f}".format))
 
 
 # ─────────────────────────────────────────────────────────────
@@ -184,9 +229,9 @@ def print_summary_table(all_records):
 
 def plot_all(results_dir="results", out_dir="figures",
              datasets=None, algorithms=None, k_values=None,
-             show=False, fontsize=18):
+             show=False, fontsize=18, show_bands=True):
     results_dir = Path(results_dir)
-    out_dir_p = Path(out_dir)
+    out_dir_p   = Path(out_dir)
     out_dir_p.mkdir(parents=True, exist_ok=True)
 
     entries = discover_results(results_dir)
@@ -194,7 +239,7 @@ def plot_all(results_dir="results", out_dir="figures",
         print(f"No result CSVs found in {results_dir}.")
         return
 
-    # Filter
+    entries = [(d, a, k, p) for d, a, k, p in entries if a not in SKIP_ALGS]
     if datasets:
         entries = [(d, a, k, p) for d, a, k, p in entries if d in datasets]
     if algorithms:
@@ -204,29 +249,38 @@ def plot_all(results_dir="results", out_dir="figures",
 
     print(f"Found {len(entries)} result file(s).")
 
-    # Load all dataframes
     all_records = []
     for ds, alg, k, path in entries:
         try:
             df = load_csv(path)
-            all_records.append((ds, alg, k, df))
+            mean_df, std_df = average_trials(df)
+            all_records.append((ds, alg, k, mean_df, std_df))
         except Exception as e:
             print(f"  [WARN] Could not load {path}: {e}")
 
     print_summary_table(all_records)
 
-    # Group by (dataset, k)
-    from collections import defaultdict
-    groups = defaultdict(dict)    # (dataset, k) -> {alg: df}
-    for ds, alg, k, df in all_records:
-        groups[(ds, k)][alg] = df
+    # Group by (dataset, k) -> {alg: (mean_df, std_df)}
+    groups = defaultdict(lambda: (dict(), dict()))
+    for ds, alg, k, mean_df, std_df in all_records:
+        groups[(ds, k)][0][alg] = mean_df
+        groups[(ds, k)][1][alg] = std_df
 
     print(f"\nGenerating plots in {out_dir_p}/")
-    for (ds, k), alg_dfs in sorted(groups.items()):
-        if not alg_dfs:
+    for (ds, k), (alg_mean, alg_std) in sorted(groups.items()):
+        if not alg_mean:
             continue
-        plot_cumulative(ds, k, alg_dfs, out_dir_p, show=show, fontsize=fontsize)
-        plot_instantaneous(ds, k, alg_dfs, out_dir_p, show=show, fontsize=fontsize)
+        plot_cumulative(ds, k, alg_mean, alg_std, out_dir_p, show=show, fontsize=fontsize, show_bands=show_bands)
+        plot_instantaneous(ds, k, alg_mean, alg_std, out_dir_p, show=show, fontsize=fontsize, show_bands=show_bands)
+
+    # Row plots: all k values side by side per dataset
+    by_dataset = defaultdict(list)
+    for (ds, k), (alg_mean, alg_std) in sorted(groups.items()):
+        if alg_mean:
+            by_dataset[ds].append((k, alg_mean, alg_std))
+    for ds, k_list in sorted(by_dataset.items()):
+        if len(k_list) > 1:
+            plot_cumulative_row(ds, k_list, out_dir_p, show=show, fontsize=fontsize - 2, show_bands=show_bands)
 
     print("Plotting complete.")
 
@@ -237,15 +291,13 @@ def plot_all(results_dir="results", out_dir="figures",
 
 def _parse_args():
     p = argparse.ArgumentParser(description="Plot online LRA benchmark results")
-    p.add_argument("--results_dir", default="results",
-                   help="Directory containing result CSVs")
-    p.add_argument("--output_dir",  default="figures",
-                   help="Directory to save figures")
+    p.add_argument("--results_dir", default="results")
+    p.add_argument("--output_dir",  default="figures")
     p.add_argument("--datasets",    nargs="+", default=None)
     p.add_argument("--algorithms",  nargs="+", default=None)
     p.add_argument("--k_values",    nargs="+", type=int, default=None)
-    p.add_argument("--show",        action="store_true",
-                   help="Display figures interactively instead of saving")
+    p.add_argument("--show",        action="store_true")
+    p.add_argument("--no_bands",    action="store_true", help="Disable shaded error bands")
     p.add_argument("--fontsize",    type=int, default=18)
     return p.parse_args()
 
@@ -260,4 +312,5 @@ if __name__ == "__main__":
         k_values=args.k_values,
         show=args.show,
         fontsize=args.fontsize,
+        show_bands=not args.no_bands,
     )

@@ -1,4 +1,6 @@
 
+*.zip
+
 ml_experiments_env/
 venv/
 env/

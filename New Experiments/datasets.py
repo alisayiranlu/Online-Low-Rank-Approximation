@@ -16,6 +16,9 @@ Available loaders
   load_movielens_20m(path, n_samples) — MovieLens 20M user-rating rows
 """
 
+import zipfile
+from contextlib import contextmanager
+
 import numpy as np
 from pathlib import Path
 from contextlib import contextmanager
